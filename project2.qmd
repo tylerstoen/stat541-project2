@@ -1,0 +1,751 @@
+---
+title: "Plastic Waste Dashboard"
+format: 
+  dashboard:
+    orientation: columns
+    theme: flatly
+embed-resources: true
+logo: plastic-logo.svg
+logo-alt: "Recycling Logo with caption"
+nav-buttons:
+      - icon: github
+        href: https://github.com/tylerstoen
+        aria-label: GitHub
+      - icon: linkedin
+        href: https://linkedin.com/in/tyler-stoen
+        aria-label: LinkedIn
+---
+
+```{r}
+#| label: load-packages
+library(tidyverse)
+library(gt)
+library(rvest)
+library(ggplot2)
+library(dplyr)
+library(httr2)
+library(jsonlite)
+library(httr)
+library(glue)
+library(tidyjson)
+library(ggridges)
+library(scales)
+library(stringdist)
+library(tidytext)
+```
+
+```{r}
+#| label: Load the Data
+plastics <- readr::read_csv('https://raw.githubusercontent.com/rfordatascience/tidytuesday/main/data/2021/2021-01-26/plastics.csv')
+```
+
+```{r}
+#| label: data-from-api
+#
+
+base_url <- "https://restcountries.com/v4/"
+
+restcountries <- GET(glue("{base_url}all?fields=name,continents,region,subregion,unMember,gini,density,geolocation"))
+
+restcountries_tidy <- restcountries %>% 
+  content(as = "text") %>% 
+  fromJSON(flatten = TRUE) %>%
+  as_tibble()
+
+```
+
+```{r}
+#| label: merge-plastics
+
+library(stringi)
+
+normalize_name <- function(x) {
+  x %>% 
+    stri_trans_general("Latin-ASCII") %>% 
+    str_to_lower() %>% 
+    str_remove_all("[^a-z ]") %>% 
+    str_trim() %>% 
+    str_squish()
+}
+
+plastics_clean <- plastics %>% 
+  filter(country != "EMPTY") %>% 
+  mutate(
+    country = case_when(
+      country == "Korea" ~ "South Korea",
+      country == "Taiwan_ Republic of China (ROC)" ~ "Taiwan",
+      country == "United Kingdom of Great Britain & Northern Ireland" ~ 
+        "United Kingdom",
+      TRUE ~ country
+    )
+  ) %>%
+  mutate(country_key = normalize_name(country))
+
+restcountries_clean <- restcountries_tidy %>% 
+  select(name.common, name.official, region, subregion,
+         density, unMember, geolocation.latitude, 
+         geolocation.longitude) %>% 
+  mutate(common_key = recode(
+    normalize_name(name.common),
+    "ivory coast" = "cote divoire"
+    ),
+         official_key = normalize_name(name.official))
+  
+
+# Different name types, try both
+
+joined <- plastics_clean %>%
+  left_join(
+    restcountries_clean %>% select(-official_key),
+    by = c("country_key" = "common_key")
+  )
+
+matched <- joined %>% filter(!is.na(region))
+unmatched <- joined %>% filter(is.na(region)) %>%
+  select(names(plastics_clean))
+
+refilled <- unmatched %>%
+  left_join(
+    restcountries_clean %>% select(-common_key),
+    by = c("country_key" = "official_key")
+  )
+
+joined1 <- bind_rows(matched, refilled)
+```
+
+```{r}
+#| label: merge-plastics-cont
+## Fuzzy matching for parent companies using stringdist
+
+noise_words <- c(
+  "\\bthe\\b",
+  "\\binc\\.?\\b",
+  "\\bco\\.?\\b",
+  "\\bltd\\.?\\b",
+  "\\bcorp\\.?\\b",
+  "\\bcompany\\b",
+  "\\bcompanies\\b",
+  "\\bgroup\\b",       # "Nestlé Group" -> "nestlé"
+  "\\bholdings\\.?\\b",
+  "\\bllc\\.?\\b",
+  "\\bplc\\.?\\b",
+  "\\bgmbh\\b",        # common German suffix
+  "\\bsa\\b",          # common in Latin America/Europe
+  "\\bsrl\\b"
+)
+
+normalize_company <- function(x) {
+  x %>%
+    str_to_lower() %>%
+    str_remove_all(paste(noise_words, collapse = "|")) %>%
+    str_remove_all("[^a-z0-9 ]") %>%
+    str_squish()
+}
+
+resolve_typos <- function(names, threshold = 0.1) {
+  dist_matrix <- stringdistmatrix(names, names, method = "jw")
+  diag(dist_matrix) <- Inf
+  
+  canonical <- names
+  
+  for (i in seq_along(names)) {
+    best_dist <- min(dist_matrix[i, ])
+    if (best_dist < threshold) {
+      best_match <- which.min(dist_matrix[i, ])
+      canonical[i] <- min(names[i], names[best_match])
+    }
+  }
+  
+  tibble(normalized = names, canonical = str_to_title(canonical))
+}
+
+companies_raw <- unique(joined1$parent_company)
+
+name_map <- tibble(original = companies_raw) %>%
+  mutate(normalized = normalize_company(original)) %>%
+  left_join(
+    resolve_typos(unique(.$normalized)),  # fuzzy match on normalized names only
+    by = "normalized"
+  )
+
+canonical_labels <- name_map %>%
+  count(canonical, original) %>%          # count how often each original appears
+  slice_max(n, by = canonical, n = 1, with_ties = FALSE) %>% # pick the most frequent per canonical
+  select(canonical, display_name = original)
+
+joined <- joined1 %>%
+  left_join(name_map %>% select(original, canonical),
+            by = c("parent_company" = "original")) %>%
+  left_join(canonical_labels, by = "canonical") %>% 
+  mutate(parent_company = display_name) %>% 
+  select(-display_name, -canonical)
+```
+
+```{r}
+#| label: API, World Bank API
+
+base_url <- "https://api.worldbank.org/v2/country/all/indicator/"
+
+pop_code <- "SP.POP.TOTL"
+gdp_code <- "NY.GDP.MKTP.CD"
+
+pop_url <- str_c(base_url, pop_code, "?format=json&per_page=20000")
+gdp_url <- str_c(base_url, gdp_code, "?format=json&per_page=20000")
+
+pop_raw <- GET(pop_url) %>% 
+  content(as = "text") %>% 
+  fromJSON(flatten = TRUE) %>%
+  pluck(2) %>% 
+  as_tibble() %>% 
+  select(
+    country.value,
+    year = date,
+    population = value
+  ) %>% 
+  mutate(year = as.numeric(year)) %>% 
+  filter(year %in% c(2019, 2020))
+
+gdp_raw <- GET(gdp_url) %>% 
+  content(as = "text") %>% 
+  fromJSON(flatten = TRUE) %>% 
+  pluck(2) %>% 
+  as_tibble() %>% 
+  select(
+    country.value,
+    year = date,
+    gdp = value
+  ) %>% 
+  mutate(year = as.numeric(year)) %>% 
+  filter(year %in% c(2019, 2020))
+
+pop_and_gdp_raw <- inner_join(pop_raw, gdp_raw, by = c("country.value", "year")) %>% 
+  mutate(country.value = recode(
+           country.value,
+          "Turkiye" = "Turkey",
+          "Hong Kong SAR, China" = "Hong Kong",
+          "Viet Nam" = "Vietnam",
+          "Korea, Rep." = "South Korea",
+          "United States" = "United States of America"
+          ),
+         country_code = normalize_name(country.value))
+
+joined_all <- joined %>% 
+  left_join(pop_and_gdp_raw, by = c("country_key" = "country_code", "year")) %>% 
+  mutate(
+    gdppercapita = gdp / population
+  )
+                              
+```
+
+## Research Q 1 {width="38%"}
+
+### Table {height="28%"}
+
+::: panel-tabset
+## Proportion of Plastic Type
+
+```{r}
+#| label: Modified custom function
+
+calc_prop <- function(var, data) {
+  data %>%
+    filter(grand_total > 0, parent_company != "Grand Total") %>%
+    group_by(year) %>%
+    summarise(
+      prop = sum(.data[[var]], na.rm = TRUE) / sum(grand_total, na.rm = TRUE),
+      .groups = "drop"
+    ) %>%
+    mutate(plastic_type = var)
+}
+
+plastic_vars <- c("empty", "hdpe", "ldpe", "o", "pet", "pp", "ps", "pvc")
+
+table3_year <- map_dfr(plastic_vars, calc_prop, data = plastics) %>%
+  mutate(
+    plastic_type = recode(
+      plastic_type,
+      empty = "Empty",
+      hdpe = "HDPE",
+      ldpe = "LDPE",
+      o = "Other",
+      pet = "PET",
+      pp = "PP",
+      ps = "PS",
+      pvc = "PVC"
+    )
+  ) %>%
+  pivot_wider(
+    names_from = plastic_type,
+    values_from = prop
+  ) %>%
+  rename(Year = year)
+
+table3 <- table3_year |>
+  gt() |>
+  cols_label(
+    Year = md("**Year**"),
+    Empty = md("**Empty (%)**"),
+    HDPE = md("**HDPE (%)**"),
+    LDPE = md("**LDPE (%)**"),
+    Other = md("**Other (%)**"),
+    PET = md("**PET (%)**"),
+    PP = md("**PP (%)**"),
+    PS = md("**PS (%)**"),
+    PVC = md("**PVC (%)**")
+  ) |>
+  fmt_percent(
+    columns = c(Empty, HDPE, LDPE, Other, PET, PP, PS, PVC),
+    decimals = 1
+  ) |>
+  data_color(
+    columns = c(Empty, HDPE, LDPE, Other, PET, PP, PS, PVC),
+    colors = col_numeric(
+      palette = c("#f7fbff", "#08306b"),
+      domain = c(0, 1)
+    )
+  ) |>
+  tab_header(
+    title = md("**Table 3. Proportion of Each Plastic Type by Year**")
+  ) |>
+  tab_source_note(
+    source_note = "Percentages of each plastic type as a share of total plastic collected, by year."
+  )
+
+table3
+```
+
+## Dominant Plastic Type
+
+```{r}
+plastic_types <- c("hdpe", "ldpe", "o", "pet", "pp", "ps", "pvc")
+
+dominant_plastic <- function(ctry) {
+  
+  ctry_norm <- normalize_name(ctry)
+  
+  df <- joined_all %>%
+    filter(country_key == ctry_norm) %>%
+    summarise(across(all_of(plastic_types), ~ sum(.x, na.rm = TRUE)))
+  
+  tibble(
+    country       = str_to_title(ctry_norm),
+    dominant_type = plastic_types[which.max(df)],
+    dominant_n    = max(df)
+  )
+}
+
+top_countries <- joined_all %>% 
+  group_by(country_key) %>%
+  summarise(total = sum(grand_total, na.rm = TRUE)) %>% 
+  slice_max(total, n = 10) %>%
+  pull(country_key)
+
+top_countries %>%
+  map(dominant_plastic) %>%
+  bind_rows() %>%
+  arrange(desc(dominant_n)) %>%
+  mutate(dominant_type = dominant_type %>% 
+           recode_values(
+             "o" ~ "Other", 
+             "ldpe" ~ "Low-Density Polyethylene",
+             "hdpe" ~ "High-Density Polyethylene",
+             "pet" ~ "Polyester",
+             "pp" ~ "Polypropylene",
+             "ps" ~ "Polystyrene",
+             "pvc" ~ "PVC")
+  ) %>% 
+  gt() %>%
+  tab_header(
+    title = md("**Dominant Plastic Type for Top 10 Countries in Total Recorded Waste**")
+    ) %>%
+  tab_source_note(
+    source_note = "Most commonly recorded plastic type for the countries producing the largest amount of plastic waste" 
+  ) %>% 
+  cols_label(
+    country       = "Country",
+    dominant_type = "Dominant Plastic Type",
+    dominant_n    = "Amount of Dominant Plastic"
+  ) %>%
+  tab_style(
+    style     = cell_text(weight = "bold"),
+    locations = cells_column_labels()
+  ) %>%
+  fmt_number(columns = dominant_n, decimals = 0)
+```
+
+## Most Waste Contributing Companies
+
+```{r}
+top_company_by_country <- function(ctry) {
+  
+  ctry_norm <- normalize_name(ctry)
+  
+  country_companies <- joined_all %>% 
+    filter(country_key == ctry_norm) %>% 
+    mutate(parent_company = str_squish(parent_company)) %>% 
+    filter(!is.na(parent_company),
+           !(parent_company %in% c("Grand Total", "null", "Unbranded", "Assorted", "NULL")))
+  
+  country_total <- country_companies %>% 
+  summarise(total = sum(grand_total, na.rm = TRUE)) %>% 
+  pull(total)
+  
+  country_companies %>% 
+    group_by(parent_company) %>% 
+    summarise(total = sum(grand_total, na.rm = TRUE)) %>% 
+    slice_max(total, n = 1) %>% 
+    mutate(country = str_to_title(ctry_norm),
+           percent = total / country_total)
+}
+
+joined_all %>%
+  distinct(country_key) %>%
+  pull(country_key) %>% 
+  map(top_company_by_country) %>% 
+  list_rbind() %>% 
+  filter(!is.nan(percent)) %>%
+  select(country, parent_company, percent) %>% 
+  arrange(desc(percent)) %>% 
+  gt() %>% 
+  cols_label(
+    country        = "Country",
+    parent_company = "Parent Company",
+    percent        = "Percent"
+  ) %>% 
+  tab_style(
+    style = cell_text(weight = "bold"),
+    locations = cells_column_labels()
+  ) %>% 
+  fmt_percent(columns = percent, decimals = 2) %>% 
+  tab_header(
+    title = md("**Company's Contributing
+                 the Most Recorded Waste by Country**")
+  ) %>% 
+  tab_source_note(
+    source_note = "Parent company with the largest number of recorded waste items in each country." 
+  )
+```
+:::
+
+### Visuals {height="36%"}
+
+```{r}
+#| label: Top companies by region
+#| fig-alt: "Faceted bar chart showing the top five parent companies contributing to plastic waste within each region (Africa, Americas, Asia, and Europe). In all regions, 'Unbranded' plastic dominates by a large margin, especially in Asia where it far exceeds other companies. Named companies such as The Coca-Cola Company, Nestle, and Unilever appear across multiple regions but contribute substantially less than unbranded sources. Overall, the distribution is highly skewed, with a single dominant category in each region and relatively small contributions from the remaining companies."
+#| fig-cap: "Bar chart showing the parent companies with the highest total recorded plastic waste, grouped by region."
+
+top_companies_region <- joined_all %>%
+  filter(
+    !is.na(parent_company),
+    !is.na(region),
+    region != "Oceania",
+    !(parent_company %in% c("Grand Total", "null", "Unbranded", "Assorted", "NULL"))
+  ) %>%
+  group_by(region, parent_company) %>%
+  summarise(
+    total_plastic = sum(grand_total, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  group_by(region) %>%
+  slice_max(order_by = total_plastic, n = 5, with_ties = FALSE) %>%
+  ungroup() %>%
+  mutate(
+    company_ordered = reorder_within(parent_company, total_plastic, region)
+  )
+
+ggplot(top_companies_region,
+       aes(x = total_plastic, y = company_ordered, fill = region)) +
+  geom_col(show.legend = FALSE) +
+  facet_wrap(~ region, scales = "free") +
+  scale_y_reordered() +
+  scale_x_continuous(
+  limits = c(0, 16000), # take out to not scale
+  breaks = seq(0, 15000, by = 5000), # take out 
+  labels = label_number(scale = 1e-3, suffix = "K")
+) + 
+  labs(
+    title = "Top Parent Companies in Recorded Plastic Waste by Region",
+    subtitle = "Top 5 companies with the highest recorded plastic waste in each region",
+    x = "Total Plastic Collected",
+    y = NULL
+  ) +
+  scale_fill_brewer(palette = "Dark2") +
+  theme_light() +
+  theme(
+    plot.title = element_text(face = "bold", size= 15),
+    plot.subtitle = element_text(size = 11),
+    panel.grid.minor = element_blank()
+  )
+```
+
+### visuals {height="36%"}
+
+```{r}
+table3_long <- table3_year %>%
+  pivot_longer(
+    cols = -Year,
+    names_to = "plastic_type",
+    values_to = "prop"
+  )
+
+ggplot(table3_long, aes(x = prop, y = plastic_type, color = factor(Year))) +
+  geom_segment(
+    aes(x = 0, xend = prop, y = plastic_type, yend = plastic_type),
+    linewidth = 1,
+    alpha = 0.6
+  ) +
+  geom_point(size = 4) +
+  scale_x_continuous(labels = percent_format()) +
+  scale_color_brewer(palette = "Dark2", name = "Year") +
+  labs(
+    title = "Plastic Type Shares Differ Between 2019 and 2020",
+    subtitle = "Lollipop chart comparing each plastic type as a proportion of total plastic collected",
+    x = "Percent of Total Plastic",
+    y = "Plastic Type"
+  ) +
+  theme_light(base_size = 14) +
+  theme(
+    plot.title = element_text(face = "bold", size= 15),
+    axis.title = element_text(face = "bold"),
+    panel.grid.minor = element_blank()
+  )
+```
+
+## RQ2 visuals
+
+### visual {height="30%"}
+
+```{r}
+#| fig-alt: "A ridgeline density plot showing the distribution of total plastic waste per country, separated by continent. Americas has the highest peak near zero with a moderate right tail. Asia has a flatter distribution with several secondary peaks at high waste values representing individual countries producing high waste. Africa is multimodal. Europe is concentrated near zero with one outlier peak. All distributions are right-skewed."
+#| fig-cap: "Density ridge plot showing the distribution of total plastic collected across regions. Each ridge represents the distribution of country-level plastic totals within a region."
+
+vis_1 <- joined_all %>%
+  filter(!is.na(region), region != "Oceania") %>% 
+  group_by(country, region) %>%
+  summarize(
+    total = sum(grand_total, na.rm = TRUE), .groups = "drop"
+  ) %>% 
+  mutate(
+    region = fct_reorder(region, total, .desc = TRUE)
+  ) %>% 
+  ggplot(aes(x=total, y=region, fill=region)) +
+  geom_density_ridges(alpha = 0.5, height = 1, position = "identity") +
+  labs(
+  title = "Total Plastic Waste by Continent",
+  subtitle = "Distribution of Total Plastic Waste by Continent",
+  x = "Total Plastic Waste (Number of Items)",
+  y = ""
+  ) +
+  scale_x_continuous(labels = label_comma()) +
+  scale_fill_brewer(palette = "Pastel1") +
+  guides(fill = guide_legend(reverse = TRUE)) +
+  theme_minimal() +
+  theme(legend.position = "none",
+        plot.title = element_text(face = "bold", size = 15))
+
+vis_1
+```
+
+### Tables
+
+::: panel-tabset
+## Plastic Per Capita
+
+</br>
+
+Plastic Per Person
+
+```{r}
+#| label: top-30
+joined_all %>%
+  group_by(country, year) %>%
+  summarise(
+    total_plastic = sum(grand_total, na.rm = TRUE),
+    population = mean(population, na.rm = TRUE),
+    plastic_per_person = total_plastic / population,
+    .groups = "drop"
+  ) %>%
+  arrange(desc(plastic_per_person))%>%
+  slice_head(n = 20) %>% 
+  gt() %>% 
+  cols_label(
+    country = md("**Country**"),
+    year = md("**Year**"),
+    total_plastic = md("**Total Plastic**"),
+    population = md("**Population**"),
+    plastic_per_person = md("**Plastic per Person**")
+  ) %>% 
+  fmt_number(
+    columns = c(total_plastic, population),
+    decimals = 0
+  ) %>% 
+  fmt_number(
+    columns = plastic_per_person,
+    decimals = 5
+  ) %>% 
+  tab_header(
+    title = md("**Top 20 Countries by Plastic Contributed per Person**")
+  ) %>% 
+  tab_source_note(
+    source_note = "Plastic per person was calculated as total plastic collected divided by population."
+  )
+```
+
+## GDP
+
+</br>
+
+GDP of Countries and GDP per capita
+
+```{r}
+#| label: bottom-30
+
+gdp_combo <- joined_all %>%
+  filter(!is.na(gdp), !is.na(gdppercapita), !is.na(country)) %>%
+  group_by(country, year) %>%
+  summarise(
+    gdp = mean(gdp, na.rm = TRUE),
+    gdp_per_capita = mean(gdppercapita, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  arrange(desc(gdp))
+
+gdp_combo %>%
+  gt() %>%
+  cols_label(
+    country = md("**Country**"),
+    year = md("**Year**"),
+    gdp = md("**GDP (USD)**"),
+    gdp_per_capita = md("**GDP per Capita (USD)**")
+  ) %>%
+  fmt_currency(
+    columns = gdp,
+    currency = "USD",
+    decimals = 0
+  ) %>%
+  fmt_currency(
+    columns = gdp_per_capita,
+    currency = "USD",
+    decimals = 0
+  ) %>%
+  tab_header(
+    title = md("**GDP and GDP per Capita by Country and Year**")
+  ) %>%
+  tab_source_note(
+    source_note = "GDP and GDP per capita values are reported in current U.S. dollars from the World Bank."
+  )
+```
+:::
+
+## Visual and model
+
+### visual gdp {height="40%"}
+
+```{r}
+#| fig-alt: "A scatterplot comparing recorded plastic waste on the y-axis against GDP per capita on the x-axis, with points colored by continent. The majority of points are clustered near zero on both axes. One African country is a strong outlier with approximately 165,000 units of plastic waste recorded despite a very low GDP per capita below 5,000. Several Asian and Americas countries also show elevated waste counts at low GDP levels. European countries are spread across the full GDP per capita range but generally show low waste counts. No clear positive or negative relationship between GDP per capita and plastic waste is visible across the full dataset."
+#| fig-cap: "Scatterplot showing the relationship between GDP per capita and total plastic collected across countries. Points are colored by region to highlight geographic differences."
+
+vis_2 <- joined_all %>% 
+  filter(!is.na(region), !is.na(gdppercapita)) %>%
+  group_by(country, gdppercapita, region) %>% 
+  summarize(
+    total = sum(grand_total, na.rm = TRUE),
+    .groups = "drop"
+  ) %>% 
+  ggplot(aes(x = gdppercapita, y = total, color = region)) +
+  geom_point(alpha = 1, size = 1.5) +
+  scale_x_continuous(labels = label_dollar()) +
+  scale_color_brewer(
+    palette = "Dark2",
+    name = "World Region"
+  ) +
+  coord_cartesian(ylim = c(0, 180000)) +
+  labs(
+    title = "Higher-Income Countries Show Wide Variation in Plastic Waste",
+    subtitle = "Country-level totals of recorded plastic waste vs GDP per capita",
+    x = "GDP per Capita (USD)",
+    y = "Total Plastic Waste"
+  ) +
+  theme_light(base_size = 15) +
+  theme(
+    plot.title = element_text(face = "bold", size= 15),
+    plot.subtitle = element_text(size = 11),
+    axis.title = element_text(face = "bold"),
+    panel.grid.minor = element_blank()
+  )
+
+vis_2
+```
+
+### Model table
+
+```{r}
+country_year <- joined_all %>%
+  group_by(country, year, region) %>%
+  summarise(
+    total_plastic = sum(grand_total, na.rm = TRUE),
+    gdp = mean(gdp, na.rm = TRUE),
+    population = mean(population, na.rm = TRUE),
+    #Temperature = mean(Temperature, na.rm = TRUE),
+   # pop_density = mean(pop_density, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  filter(
+    !is.na(total_plastic),
+    !is.na(gdp),
+    #!is.na(Temperature),
+    !is.na(region)
+  )
+
+model_data <- country_year %>%
+  filter(
+    total_plastic > 0,
+    !is.na(gdp),
+   # !is.na(Temperature),
+    #!is.na(pop_density),
+    !is.na(region)
+  ) %>%
+  mutate(
+    log_total_plastic = log(total_plastic),
+    log_gdp = log(gdp)
+  )
+
+plastic_model <- lm(
+  log_total_plastic ~ log_gdp   + region,
+  data = model_data
+)
+
+library(broom)
+library(gt)
+
+model_table <- tidy(plastic_model, conf.int = TRUE) %>%
+  select(term, estimate, std.error, statistic, p.value, conf.low, conf.high)
+
+model_gt <- model_table %>%
+  gt() %>%
+  cols_label(
+    term = md("**Term**"),
+    estimate = md("**Estimate**"),
+    std.error = md("**Std. Error**"),
+    statistic = md("**t Statistic**"),
+    p.value = md("**p-value**"),
+    conf.low = md("**CI Lower**"),
+    conf.high = md("**CI Upper**")
+  ) %>%
+  fmt_number(
+    columns = c(estimate, std.error, statistic, conf.low, conf.high),
+    decimals = 3
+  ) %>%
+  fmt_number(
+    columns = p.value,
+    decimals = 4
+  ) %>%
+  tab_header(
+    title = md("**Regression Model for Log Total Plastic Collected**")
+  ) %>%
+  tab_source_note(
+    source_note = "Linear regression model predicting log total plastic collected from GDP, and region."
+  )
+
+model_gt
+```

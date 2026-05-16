@@ -1,8 +1,8 @@
 ---
-title: "Plastic Waste Dashboard"
+title: "Country Plastic Waste"
 format: 
   dashboard:
-    orientation: columns
+    orientation: rows
     theme: flatly
 embed-resources: true
 logo: plastic-logo.svg
@@ -247,21 +247,84 @@ joined_all <- joined %>%
                               
 ```
 
-# Main Dashboard
-
-## 
+# All Countries
 
 ::: {.callout-note}
-### Research Question
+## Research Question {height=15%}
 
 How does country geography and economic status effect their amount of recorded plastic waste? Do more developed countries in terms of GDP and population tend to have more or less recorded waste?
 :::
 
-### visual 
+
+## Row {height=85%}
+
+### Tabset 1 {width=50%}
+
+::: panel-tabset
+
+## Country Map
 
 ```{r}
-#| fig-alt: "A ridgeline density plot showing the distribution of plastic waste per capita in pieces per person by continent, with four ridges for Europe, Americas, Asia, and Africa. All distributions are right-skewed and peak near zero plastic items recorded per person. Europe has the widest spread with several secondary peaks and one extreme outlier. Asia also has an extreme outlier at 0.010 pieces of plastic per capita. Africa is the most concentrated near zero with a slightly wider base than the others."
-#| fig-cap: "Density ridge plot showing the distribution of pieces of plastic collected per capita across regions. Each ridge represents the distribution of country-level plastic totals per capita within a region."
+world_coords <- map_data("world") |>
+  group_by(region) |>
+  summarise(
+    lng = mean(long, na.rm = TRUE),
+    lat = mean(lat, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+plastics_country <- joined_all |>
+  filter(parent_company == "Grand Total") |>
+  group_by(country) |>
+  summarise(
+    total_plastic = sum(grand_total, na.rm = TRUE),
+    population = first(population),  # adjust if your pop column is named differently
+    .groups = "drop"
+  ) |>
+  mutate(
+    plastic_per_capita = total_plastic / population,
+    country = recode(
+      country,
+      "Cote D_ivoire" = "Ivory Coast",
+      "ECUADOR" = "Ecuador",
+      "Hong Kong" = "Hong Kong",
+      "NIGERIA" = "Nigeria",
+      "United Kingdom" = "UK",
+      "United States of America" = "USA"
+    )
+  ) |>
+  left_join(world_coords, by = c("country" = "region"))
+
+pal <- colorNumeric("Blues", domain = plastics_country$plastic_per_capita)
+
+leaflet(plastics_country |> filter(!is.na(lat), !is.na(lng))) |>
+  addTiles() |>
+  addCircleMarkers(
+    lng = ~lng,
+    lat = ~lat,
+    radius = ~sqrt(plastic_per_capita) * 200,
+    popup = ~paste0(
+      "<strong>", country, "</strong><br>",
+      "Plastic per Capita: ", round(plastic_per_capita, 4), "<br>",
+      "Total Plastic: ", scales::comma(total_plastic), "<br>",
+      "Population: ", scales::comma(population)
+    ),
+    fillOpacity = 0.7,
+    stroke = FALSE
+  ) |> 
+  addControl(
+    html = "<div style='background:white; padding:8px; border-radius:5px;
+             border:1px solid #ccc; font-size:16px; font-weight:bold'>
+             Plastic Waste per Capita by Country
+             </div>",
+    position = "topright"
+  )
+```
+
+## Continent Plastic per Capita Distributions
+
+```{r}
+#| fig-alt: "A ridgeline density plot showing the log-transformed distribution of plastic waste per capita in pieces per person by continent, with four ridges for Europe, Americas, Asia, and Africa. On the log scale, distributions are approximately bell-shaped and more comparable across continents. Europe has the widest spread and is centered around -10, while Africa is narrower and centered slightly lower. Asia shows a bimodal distribution with two distinct peaks."
 
 vis_1.5 <- joined_all %>%
   filter(!is.na(region), region != "Oceania") %>% 
@@ -273,72 +336,65 @@ vis_1.5 <- joined_all %>%
     region = fct_reorder(region, total, .desc = TRUE),
     waste_per_capita = total/population
   ) %>% 
-  ggplot(aes(x=waste_per_capita, y=region, fill=region)) +
+  ggplot(aes(x=log(waste_per_capita), y=region, fill=region)) +
   geom_density_ridges(alpha = 0.5, height = 1, position = "identity") +
   labs(
-    title = "Plastic Waste per Capita by Continent",
-    subtitle = "Distribution of Plastic Waste per Capita by Continent (in Pieces/Person)",
-    x= "Plastic Waste Per Capita (Items per Person)",
-    y= ""
+    title = "Log-Transformed Plastic Waste per Capita by Continent",
+    subtitle = "Distribution of Log(Plastic Waste per Capita) by Continent (in Pieces/Person)",
+    x = "Log(Plastic Waste per Capita) (Items per Person)",
+    y = ""
   ) +
   scale_fill_brewer(palette = "Pastel1") +
   theme_minimal() +
   theme(legend.position = "none",
         plot.title = element_text(face = "bold", size = 15))
-
 vis_1.5
 ```
 
-### Tables {height="45%"}
+:::
+
+
+### Tabset 2 {width=50%}
 
 ::: panel-tabset
-## Plastic Per Capita
-
-</br>
-
-Plastic Per Person
-
-```{r}
-#| label: top-30
-joined_all %>%
-  group_by(country, year) %>%
-  summarise(
-    total_plastic = sum(grand_total, na.rm = TRUE),
-    population = mean(population, na.rm = TRUE),
-    plastic_per_person = total_plastic / population,
-    .groups = "drop"
-  ) %>%
-  arrange(desc(plastic_per_person))%>%
-  slice_head(n = 20) %>% 
-  gt() %>% 
-  cols_label(
-    country = md("**Country**"),
-    year = md("**Year**"),
-    total_plastic = md("**Total Plastic**"),
-    population = md("**Population**"),
-    plastic_per_person = md("**Plastic per Person**")
-  ) %>% 
-  fmt_number(
-    columns = c(total_plastic, population),
-    decimals = 0
-  ) %>% 
-  fmt_number(
-    columns = plastic_per_person,
-    decimals = 5
-  ) %>% 
-  tab_header(
-    title = md("**Top 20 Countries by Plastic Contributed per Person**")
-  ) %>% 
-  tab_source_note(
-    source_note = "Plastic per person was calculated as total plastic collected divided by population."
-  )
-```
 
 ## GDP
 
-</br>
+```{r}
+#| fig-alt: "A scatterplot comparing log-transformed recorded plastic waste on the y-axis against GDP per capita on the x-axis, with points colored by continent and a linear trend line in black. The trend line shows a slight negative relationship, suggesting that countries with higher GDP per capita tend to have slightly lower recorded plastic waste. Most countries cluster at low GDP per capita values. European countries are spread across the full GDP range with high variation in waste levels."
 
-Capita Recorded Plastic Wast
+vis_2 <- joined_all %>% 
+  filter(!is.na(region), !is.na(gdppercapita)) %>%
+  group_by(country, gdppercapita, region) %>% 
+  summarize(
+    total = sum(grand_total, na.rm = TRUE),
+    .groups = "drop"
+  ) %>% 
+  ggplot(aes(x = gdppercapita, y = log(total), color = region)) +
+  geom_point(alpha = 1, size = 1.5) +
+  geom_smooth(method = "lm", se = FALSE, linewidth = 0.7, color = "black") +
+  scale_x_continuous(labels = label_dollar()) +
+  scale_color_brewer(
+    palette = "Dark2",
+    name = "World Region"
+  ) +
+  labs(
+    title = "Higher-Income Countries Tend to Record Less Plastic Waste",
+    subtitle = "Country-level totals of log-transformed recorded plastic waste vs GDP per capita",
+    x = "GDP per Capita (USD)",
+    y = "Log(Total Plastic Waste)"
+  ) +
+  theme_light(base_size = 15) +
+  theme(
+    plot.title = element_text(face = "bold", size= 15),
+    plot.subtitle = element_text(size = 11),
+    axis.title = element_text(face = "bold"),
+    panel.grid.minor = element_blank()
+  )
+vis_2
+```
+
+## Plastic by Income Bracket
 
 ```{r}
 # GDP per capita income brackets
@@ -347,13 +403,15 @@ income_labels <- c("Low (<$10K)", "Lower-Middle ($10K-$20K)",
                    "Upper-Middle ($20K-$40K)", "High (>$40K)")
 
 country_level <- joined_all %>%
-  filter(!(parent_company %in% c("Grand Total", "null", "Unbranded", "Assorted", "NULL"))) %>%
   group_by(country, region, gdppercapita, population) %>%
   summarise(total_plastic = sum(grand_total, na.rm = TRUE), .groups = "drop") %>%
   mutate(
     plastic_per_capita = total_plastic / population,
     income_group = cut(gdppercapita, breaks = income_breaks, labels = income_labels)
   )
+
+joined_all %>% 
+  filter(is.na(gdppercapita))
 
 # Custom function: summary stats for one income group
 summarise_income_group <- function(group_name) {
@@ -387,103 +445,16 @@ income_summary %>%
   fmt_number(columns = c(avg_plastic_per_capita, median_plastic_per_capita), decimals = 5) %>%
   fmt_number(columns = total_plastic, decimals = 0) %>%
   tab_header(
-    title = md("**Per Capita Recorded Plastic Waste by Economic Group**")
+    title = md("**Table 4. Per Capita Recorded Plastic Waste by Economic Group**")
   ) %>%
   tab_source_note(
     source_note = "Countries grouped by GDP per capita using World Bank income thresholds. Recorded plastic per person calculated as total recorded items divided by population."
   )
 ```
+
 :::
 
-
-## Visuals
-
-### visual gdp {height="45%"}
-
-```{r}
-#| fig-alt: "A scatterplot comparing recorded plastic waste on the y-axis against GDP per capita on the x-axis, with points colored by continent. The majority of points are clustered near zero on both axes. One African country is a strong outlier with approximately 165,000 units of plastic waste recorded despite a very low GDP per capita below 5,000. Several Asian and Americas countries also show elevated waste counts at low GDP levels. European countries are spread across the full GDP per capita range but generally show low waste counts. No clear positive or negative relationship between GDP per capita and plastic waste is visible across the full dataset."
-#| fig-cap: "Scatterplot showing the relationship between GDP per capita and total plastic collected across countries. Points are colored by region to highlight geographic differences."
-
-vis_2 <- joined_all %>% 
-  filter(!is.na(region), !is.na(gdppercapita)) %>%
-  group_by(country, gdppercapita, region) %>% 
-  summarize(
-    total = sum(grand_total, na.rm = TRUE),
-    .groups = "drop"
-  ) %>% 
-  ggplot(aes(x = gdppercapita, y = total, color = region)) +
-  geom_point(alpha = 1, size = 1.5) +
-  scale_x_continuous(labels = label_dollar()) +
-  scale_color_brewer(
-    palette = "Dark2",
-    name = "World Region"
-  ) +
-  coord_cartesian(ylim = c(0, 180000)) +
-  labs(
-    title = "Higher-Income Countries Show Wide Variation in Plastic Waste",
-    subtitle = "Country-level totals of recorded plastic waste vs GDP per capita",
-    x = "GDP per Capita (USD)",
-    y = "Total Plastic Waste"
-  ) +
-  theme_light(base_size = 15) +
-  theme(
-    plot.title = element_text(face = "bold", size= 15),
-    plot.subtitle = element_text(size = 11),
-    axis.title = element_text(face = "bold"),
-    panel.grid.minor = element_blank()
-  )
-
-vis_2
-```
-
-
-### leaflet
-
-```{r}
-world_coords <- map_data("world") |>
-  group_by(region) |>
-  summarise(
-    lng = mean(long, na.rm = TRUE),
-    lat = mean(lat, na.rm = TRUE),
-    .groups = "drop"
-  )
-
-plastics_country <- joined_all |>
-  filter(parent_company == "Grand Total") |>
-  group_by(country) |>
-  summarise(
-    total_plastic = sum(grand_total, na.rm = TRUE),
-    .groups = "drop"
-  ) |>
-  mutate(
-    country = recode(
-      country,
-      "Cote D_ivoire" = "Ivory Coast",
-      "ECUADOR" = "Ecuador",
-      "Hong Kong" = "Hong Kong",
-      "NIGERIA" = "Nigeria",
-      "United Kingdom" = "UK",
-      "United States of America" = "USA"
-    )
-  ) |>
-  left_join(world_coords, by = c("country" = "region"))
-
-leaflet(plastics_country |> filter(!is.na(lat), !is.na(lng))) |>
-  addTiles() |>
-  addCircleMarkers(
-    lng = ~lng,
-    lat = ~lat,
-    radius = ~sqrt(total_plastic) / 25,
-    popup = ~paste0(
-      "<strong>", country, "</strong><br>",
-      "Total Plastic: ", scales::comma(total_plastic)
-    ),
-    fillOpacity = 0.7,
-    stroke = FALSE
-  )
-```
-
-# Country Deep Dive
+# Country Deep Dive {orientation="columns"}
 
 ## New country {width=40%}
 

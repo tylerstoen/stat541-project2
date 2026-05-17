@@ -18,6 +18,7 @@ nav-buttons:
 ---
 
 ```{r, Packages and Data}
+#| context: setup
 #| code-fold: true
 library(tidyverse)
 library(gt)
@@ -41,11 +42,13 @@ library(gifski)
 ```
 
 ```{r}
+#| context: setup
 #| label: Load the Data
 plastics <- readr::read_csv('https://raw.githubusercontent.com/rfordatascience/tidytuesday/main/data/2021/2021-01-26/plastics.csv')
 ```
 
 ```{r}
+#| context: setup
 #| label: data-from-api
 #| message: FALSE
 #| warning: FALSE
@@ -65,6 +68,7 @@ restcountries_tidy <- restcountries %>%
 ```
 
 ```{r}
+#| context: setup
 #| label: merge-plastics
 
 library(stringi)
@@ -124,6 +128,7 @@ joined1 <- bind_rows(matched, refilled)
 ```
 
 ```{r}
+#| context: setup
 #| label: merge-plastics-cont
 ## Fuzzy matching for parent companies using stringdist
 
@@ -193,6 +198,7 @@ joined <- joined1 %>%
 ```
 
 ```{r}
+#| context: setup
 #| label: API, World Bank  API
 
 base_url <- "https://api.worldbank.org/v2/country/all/indicator/"
@@ -266,6 +272,7 @@ How does country geography and economic status effect their amount of recorded p
 ## Country Map
 
 ```{r}
+#| context: setup
 world_coords <- map_data("world") |>
   group_by(region) |>
   summarise(
@@ -325,6 +332,7 @@ leaflet(plastics_country |> filter(!is.na(lat), !is.na(lng))) |>
 ## Continent Plastic per Capita Distributions
 
 ```{r}
+#| context: setup
 #| fig-alt: "A ridgeline density plot showing the log-transformed distribution of plastic waste per capita in pieces per person by continent, with four ridges for Europe, Americas, Asia, and Africa. On the log scale, distributions are approximately bell-shaped and more comparable across continents. Europe has the widest spread and is centered around -10, while Africa is narrower and centered slightly lower. Asia shows a bimodal distribution with two distinct peaks."
 
 vis_1.5 <- joined_all %>%
@@ -362,6 +370,7 @@ vis_1.5
 ## GDP
 
 ```{r}
+#| context: setup
 #| fig-alt: "A scatterplot comparing log-transformed recorded plastic waste on the y-axis against GDP per capita on the x-axis, with points colored by continent and a linear trend line in black. The trend line shows a slight negative relationship, suggesting that countries with higher GDP per capita tend to have slightly lower recorded plastic waste. Most countries cluster at low GDP per capita values. European countries are spread across the full GDP range with high variation in waste levels."
 
 vis_2 <- joined_all %>% 
@@ -398,6 +407,7 @@ vis_2
 ## Plastic by Income Bracket
 
 ```{r}
+#| context: setup
 # GDP per capita income brackets
 income_breaks <- c(0, 10000, 20000, 40000, Inf)
 income_labels <- c("Low (<$10K)", "Lower-Middle ($10K-$20K)", 
@@ -452,7 +462,7 @@ income_summary %>%
 
 :::
 
-# Country Deep Dive
+# Country Deep Dive {orientation="columns"}
 
 
 ## Why this country?
@@ -461,6 +471,7 @@ We selected Montenegro because it appeared as a strong outlier in several of the
 
 
 ```{r}
+#| context: setup
 
 renewable_code <- "EG.FEC.RNEW.ZS"  
 pop_growth_code <- "SP.POP.GROW"
@@ -535,10 +546,6 @@ montenegro_full <- montenegro %>%
 
 ```
 
-##
-
-## Slider plot and check Box  {width="25%"}
-
 
 ```{r}
 #| context: setup
@@ -554,125 +561,171 @@ library(maps)
 library(plotly)
 library(shiny)
 
-base_url <- "https://api.worldbank.org/v2/country/MNE/indicator/"
+# 2019 stats
+mont_plastic_19 <- joined_all %>%
+  filter(country == "Montenegro", year == 2019) %>%
+  summarise(total_plastic = sum(grand_total, na.rm = TRUE)) %>%
+  pull(total_plastic)
 
-renewable_code <- "EG.FEC.RNEW.ZS"  
-pop_growth_code <- "SP.POP.GROW"
-gdp_pc_code <- "NY.GDP.PCAP.CD"
+mont_rank_19 <- joined_all %>%
+  filter(year == 2019) %>%
+  group_by(country) %>%
+  summarise(total = sum(grand_total, na.rm = TRUE)) %>%
+  mutate(rank = rank(desc(total))) %>%
+  filter(country == "Montenegro") %>%
+  pull(rank)
 
-get_wb_indicator <- function(code, new_name) {
-  url <- str_c(base_url, code, "?format=json&per_page=20000")
-  
-  GET(url) %>% 
-    content(as = "text") %>% 
-    fromJSON(flatten = TRUE) %>%
-    pluck(2) %>% 
-    as_tibble() %>% 
-    mutate(
-      country = country.value,
-      year = as.numeric(date),
-      value = as.numeric(value)
-    ) %>% 
-    select(country, year, value) %>% 
-    filter(year >= 2010, year <= 2020) %>%
-    rename(!!new_name := value)
-}
+mont_plastic_per_cap_19 <- joined_all %>%
+  filter(country == "Montenegro", year == 2019) %>%
+  summarise(
+    total = sum(grand_total, na.rm = TRUE),
+    pop   = mean(population, na.rm = TRUE)
+  ) %>%
+  mutate(per_cap = round(total / pop, 5)) %>%
+  pull(per_cap)
 
-renewable_raw <- get_wb_indicator(renewable_code, "renewable_pct")
-pop_growth_raw <- get_wb_indicator(pop_growth_code, "pop_growth")
-gdp_pc_raw <- get_wb_indicator(gdp_pc_code, "gdp_pc")
+mont_percap_rank_19 <- joined_all %>%
+  filter(year == 2019) %>%
+  group_by(country) %>%
+  summarise(
+    total = sum(grand_total, na.rm = TRUE),
+    pop   = mean(population, na.rm = TRUE)
+  ) %>%
+  mutate(per_cap = total / pop,
+         rank    = rank(desc(per_cap))) %>%
+  filter(country == "Montenegro") %>%
+  pull(rank)
 
-montenegro_full <- pop_growth_raw %>%
-  left_join(gdp_pc_raw, by = c("country", "year")) %>%
-  left_join(renewable_raw, by = c("country", "year"))
+# 2020 stats
+mont_plastic_20 <- joined_all %>%
+  filter(country == "Montenegro", year == 2020) %>%
+  summarise(total_plastic = sum(grand_total, na.rm = TRUE)) %>%
+  pull(total_plastic)
 
+mont_rank_20 <- joined_all %>%
+  filter(year == 2020) %>%
+  group_by(country) %>%
+  summarise(total = sum(grand_total, na.rm = TRUE)) %>%
+  mutate(rank = rank(desc(total))) %>%
+  filter(country == "Montenegro") %>%
+  pull(rank)
+
+mont_plastic_per_cap_20 <- joined_all %>%
+  filter(country == "Montenegro", year == 2020) %>%
+  summarise(
+    total = sum(grand_total, na.rm = TRUE),
+    pop   = mean(population, na.rm = TRUE)
+  ) %>%
+  mutate(per_cap = round(total / pop, 5)) %>%
+  pull(per_cap)
+
+mont_percap_rank_20 <- joined_all %>%
+  filter(year == 2020) %>%
+  group_by(country) %>%
+  summarise(
+    total = sum(grand_total, na.rm = TRUE),
+    pop   = mean(population, na.rm = TRUE)
+  ) %>%
+  mutate(per_cap = total / pop,
+         rank    = rank(desc(per_cap))) %>%
+  filter(country == "Montenegro") %>%
+  pull(rank)
+
+mont_gdp <- joined_all %>%
+  filter(country == "Montenegro", year == 2020) %>%
+  summarise(gdppercapita = mean(gdppercapita, na.rm = TRUE)) %>%
+  pull(gdppercapita) %>%
+  round(0)
+
+mont_gdp_rank <- joined_all %>%
+  filter(year == 2020) %>%
+  distinct(country, gdppercapita) %>%
+  filter(!is.na(gdppercapita)) %>%
+  mutate(rank = rank(desc(gdppercapita))) %>%
+  filter(country == "Montenegro") %>%
+  pull(rank)
 ```
 
-### controls {height="120px"}
+### {height=30%}
+
+::: {.valuebox title="Total Plastic Recorded" icon=trash color="#2166ac"}
+`{r} paste0(format(mont_plastic_19, big.mark = ","), " (#", mont_rank_19, " in 2019)  |  ", format(mont_plastic_20, big.mark = ","), " (#", mont_rank_20, " in 2020)")`
+:::
+
+### {height=30%}
+
+::: {.valuebox title="Plastic per Person" icon=person color="#4dac26"}
+`{r} paste0(mont_plastic_per_cap_19, " (#", mont_percap_rank_19, " in 2019)  |  ", mont_plastic_per_cap_20, " (#", mont_percap_rank_20, " in 2020)")`
+:::
+
+
+
+## {width=60%}
+
+### Montenegro Indicator Plot
+
 ```{r}
-bslib::layout_columns(
-  
-  div(
-    sliderInput(
-      inputId = "years",
-      label = "Select Year Range:",
-      min = min(montenegro_full$year, na.rm = TRUE),
-      max = max(montenegro_full$year, na.rm = TRUE),
-      value = c(2010, 2020),
-      step = 1,
-      sep = ""
-    )
+selectInput(
+  inputId = "indicator",
+  label   = "Select Indicator:",
+  choices = c(
+    "Renewable Energy (%)"  = "renewable",
+    "GDP per Capita"        = "gdp",
+    "Population Growth (%)" = "pop"
   ),
-
-  div(
-    checkboxGroupInput(
-      inputId = "variables",
-      label = "Select Variables to Display:",
-      choices = c(
-        "Population Growth %" = "pop_growth",
-        "GDP per Capita" = "gdp_pc",
-        "Renewable Energy %" = "renewable_pct"
-      ),
-      selected = c("gdp_pc", "renewable_pct")
-    )
-  ),
-
-  col_widths = c(6, 6)
+  selected = "gdp"
 )
+
+plotlyOutput("indicator_plot")
 ```
-
-## Row
-
-### Montenegro Development Indicators
-```{r}
-plotOutput("indicator_plot", height = "700px")
-```
-
 
 ```{r}
 #| context: server
 
-filtered_data <- reactive({
-  montenegro_full %>%
-    filter(
-      year >= input$years[1],
-      year <= input$years[2]
-    ) %>%
-    select(country, year, all_of(input$variables)) %>%
-    pivot_longer(
-      cols = all_of(input$variables),
-      names_to = "indicator",
-      values_to = "value"
-    ) %>%
-    mutate(
-      indicator = recode(
-        indicator,
-        pop_growth = "Population Growth",
-        gdp_pc = "GDP per Capita",
-        renewable_pct = "Renewable Energy %"
-      )
+output$indicator_plot <- renderPlotly({
+  
+  plot_data <- switch(input$indicator,
+    renewable = list(
+      data   = renewable_raw,
+      y      = "renewable_pct",
+      title  = "Renewable Energy Consumption in Montenegro (2010-2020)",
+      y_lab  = "Renewable Energy Consumption (%)",
+      tooltip = paste0("Year: ", renewable_raw$year,
+                       "<br>Renewable: ", round(renewable_raw$renewable_pct, 2), "%")
+    ),
+    gdp = list(
+      data   = gdp_pc_raw,
+      y      = "gdp_pc",
+      title  = "GDP per Capita in Montenegro (2010-2020)",
+      y_lab  = "GDP per Capita (USD)",
+      tooltip = paste0("Year: ", gdp_pc_raw$year,
+                       "<br>GDP per Capita: $", round(gdp_pc_raw$gdp_pc, 0))
+    ),
+    pop = list(
+      data   = pop_growth_raw,
+      y      = "pop_growth",
+      title  = "Population Growth in Montenegro (2010-2020)",
+      y_lab  = "Population Growth (%)",
+      tooltip = paste0("Year: ", pop_growth_raw$year,
+                       "<br>Population Growth: ", round(pop_growth_raw$pop_growth, 2), "%")
     )
-})
-
-output$indicator_plot <- renderPlot({
-  filtered_data() %>%
-    ggplot(aes(x = year, y = value, color = indicator)) +
-    geom_line(linewidth = 1.2) +
-    geom_point(size = 2.5) +
-    facet_wrap(~ indicator, scales = "free_y") +
-    scale_color_brewer(palette = "Dark2", guide = "none") +
+  )
+  
+  p <- ggplot(plot_data$data, aes(
+    x    = year,
+    y    = .data[[plot_data$y]],
+    group = 1,
+    text = plot_data$tooltip
+  )) +
+    geom_line(color = "steelblue", linewidth = 1) +
+    geom_point(color = "steelblue", size = 2) +
     labs(
-      title = "Montenegro Development Indicators Over Time",
-      subtitle = "Indicators update based on selected years and variables",
-      x = "Year",
-      y = "Value"
+      title = plot_data$title,
+      x     = "Year",
+      y     = plot_data$y_lab
     ) +
-    theme_light(base_size = 14) +
-    theme(
-      plot.title = element_text(face = "bold"),
-      axis.title = element_text(face = "bold"),
-      panel.grid.minor = element_blank()
-    )
+    theme_minimal()
+  
+  ggplotly(p, tooltip = "text")
 })
-
 ```

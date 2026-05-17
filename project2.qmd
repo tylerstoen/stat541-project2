@@ -7,6 +7,7 @@ format:
 embed-resources: true
 logo: plastic-logo.svg
 logo-alt: "Recycling Logo with caption"
+server: shiny
 nav-buttons:
       - icon: github
         href: https://github.com/tylerstoen
@@ -410,9 +411,6 @@ country_level <- joined_all %>%
     income_group = cut(gdppercapita, breaks = income_breaks, labels = income_labels)
   )
 
-joined_all %>% 
-  filter(is.na(gdppercapita))
-
 # Custom function: summary stats for one income group
 summarise_income_group <- function(group_name) {
   country_level %>%
@@ -454,15 +452,15 @@ income_summary %>%
 
 :::
 
-# Country Deep Dive {orientation="columns"}
+# Country Deep Dive
 
-## New country {width=40%}
 
-### Why this country? {height=40%}
+## Why this country?
 We selected Montenegro because it appeared as a strong outlier in several of the plastic waste per capita analyses, with substantially higher values than all other countries in the dataset. This makes Montenegro an interesting case study for exploring how environmental, economic, and demographic indicators relate to waste patterns over time. By focusing on an unusual observation, we can better understand how Montenegro differs from more typical countries represented in the data.
 
+
+
 ```{r}
-#| include: false
 
 renewable_code <- "EG.FEC.RNEW.ZS"  
 pop_growth_code <- "SP.POP.GROW"
@@ -529,175 +527,152 @@ gdp_pc_raw <- GET(gdp_pc_url) %>%
   ) %>% 
   arrange(year)
 
+montenegro <- pop_growth_raw %>%
+  left_join(gdp_pc_raw, by = c("country", "year"))
+
+montenegro_full <- montenegro %>%
+  left_join(renewable_raw, by = c("country", "year"))
+
+```
+
+##
+
+## Slider plot and check Box  {width="25%"}
+
+
+```{r}
+#| context: setup
+
+library(tidyverse)
+library(shiny)
+library(httr)
+library(jsonlite)
+library(scales)
+library(ggplot2)
+library(leaflet)
+library(maps)
+library(plotly)
+library(shiny)
+
+base_url <- "https://api.worldbank.org/v2/country/MNE/indicator/"
+
+renewable_code <- "EG.FEC.RNEW.ZS"  
+pop_growth_code <- "SP.POP.GROW"
+gdp_pc_code <- "NY.GDP.PCAP.CD"
+
+get_wb_indicator <- function(code, new_name) {
+  url <- str_c(base_url, code, "?format=json&per_page=20000")
+  
+  GET(url) %>% 
+    content(as = "text") %>% 
+    fromJSON(flatten = TRUE) %>%
+    pluck(2) %>% 
+    as_tibble() %>% 
+    mutate(
+      country = country.value,
+      year = as.numeric(date),
+      value = as.numeric(value)
+    ) %>% 
+    select(country, year, value) %>% 
+    filter(year >= 2010, year <= 2020) %>%
+    rename(!!new_name := value)
+}
+
+renewable_raw <- get_wb_indicator(renewable_code, "renewable_pct")
+pop_growth_raw <- get_wb_indicator(pop_growth_code, "pop_growth")
+gdp_pc_raw <- get_wb_indicator(gdp_pc_code, "gdp_pc")
+
 montenegro_full <- pop_growth_raw %>%
   left_join(gdp_pc_raw, by = c("country", "year")) %>%
   left_join(renewable_raw, by = c("country", "year"))
 
-# 2019 stats
-mont_plastic_19 <- joined_all %>%
-  filter(country == "Montenegro", year == 2019) %>%
-  summarise(total_plastic = sum(grand_total, na.rm = TRUE)) %>%
-  pull(total_plastic)
-
-mont_rank_19 <- joined_all %>%
-  filter(year == 2019) %>%
-  group_by(country) %>%
-  summarise(total = sum(grand_total, na.rm = TRUE)) %>%
-  mutate(rank = rank(desc(total))) %>%
-  filter(country == "Montenegro") %>%
-  pull(rank)
-
-mont_plastic_per_cap_19 <- joined_all %>%
-  filter(country == "Montenegro", year == 2019) %>%
-  summarise(
-    total = sum(grand_total, na.rm = TRUE),
-    pop   = mean(population, na.rm = TRUE)
-  ) %>%
-  mutate(per_cap = round(total / pop, 5)) %>%
-  pull(per_cap)
-
-mont_percap_rank_19 <- joined_all %>%
-  filter(year == 2019) %>%
-  group_by(country) %>%
-  summarise(
-    total = sum(grand_total, na.rm = TRUE),
-    pop   = mean(population, na.rm = TRUE)
-  ) %>%
-  mutate(per_cap = total / pop,
-         rank    = rank(desc(per_cap))) %>%
-  filter(country == "Montenegro") %>%
-  pull(rank)
-
-# 2020 stats
-mont_plastic_20 <- joined_all %>%
-  filter(country == "Montenegro", year == 2020) %>%
-  summarise(total_plastic = sum(grand_total, na.rm = TRUE)) %>%
-  pull(total_plastic)
-
-mont_rank_20 <- joined_all %>%
-  filter(year == 2020) %>%
-  group_by(country) %>%
-  summarise(total = sum(grand_total, na.rm = TRUE)) %>%
-  mutate(rank = rank(desc(total))) %>%
-  filter(country == "Montenegro") %>%
-  pull(rank)
-
-mont_plastic_per_cap_20 <- joined_all %>%
-  filter(country == "Montenegro", year == 2020) %>%
-  summarise(
-    total = sum(grand_total, na.rm = TRUE),
-    pop   = mean(population, na.rm = TRUE)
-  ) %>%
-  mutate(per_cap = round(total / pop, 5)) %>%
-  pull(per_cap)
-
-mont_percap_rank_20 <- joined_all %>%
-  filter(year == 2020) %>%
-  group_by(country) %>%
-  summarise(
-    total = sum(grand_total, na.rm = TRUE),
-    pop   = mean(population, na.rm = TRUE)
-  ) %>%
-  mutate(per_cap = total / pop,
-         rank    = rank(desc(per_cap))) %>%
-  filter(country == "Montenegro") %>%
-  pull(rank)
-
-mont_gdp <- joined_all %>%
-  filter(country == "Montenegro", year == 2020) %>%
-  summarise(gdppercapita = mean(gdppercapita, na.rm = TRUE)) %>%
-  pull(gdppercapita) %>%
-  round(0)
-
-mont_gdp_rank <- joined_all %>%
-  filter(year == 2020) %>%
-  distinct(country, gdppercapita) %>%
-  filter(!is.na(gdppercapita)) %>%
-  mutate(rank = rank(desc(gdppercapita))) %>%
-  filter(country == "Montenegro") %>%
-  pull(rank)
 ```
 
-### {height=30%}
-
-::: {.valuebox title="Total Plastic Recorded" icon=trash color="#2166ac"}
-`{r} paste0(format(mont_plastic_19, big.mark = ","), " (#", mont_rank_19, " in 2019)  |  ", format(mont_plastic_20, big.mark = ","), " (#", mont_rank_20, " in 2020)")`
-:::
-
-### {height=30%}
-
-::: {.valuebox title="Plastic per Person" icon=person color="#4dac26"}
-`{r} paste0(mont_plastic_per_cap_19, " (#", mont_percap_rank_19, " in 2019)  |  ", mont_plastic_per_cap_20, " (#", mont_percap_rank_20, " in 2020)")`
-:::
-
-## {width=60%}
-
-### Plot
-
+### controls {height="120px"}
 ```{r}
-p <- ggplot(renewable_raw, aes(
-  x = year,
-  y = renewable_pct,
-      group = 1,
-  text = paste0("Year: ", year, "<br>Renewable: ", round(renewable_pct, 2), "%")
-)) +
-  geom_line(color = "steelblue", linewidth = 1) +
-  geom_point(color = "steelblue", size = 2) +
-  labs(
-    title = "Renewable Energy Consumption in Montenegro (2010-2020)",
-    x = "Year",
-    y = "Renewable Energy Consumption (%)"
-  ) +
-  theme_minimal()
+bslib::layout_columns(
+  
+  div(
+    sliderInput(
+      inputId = "years",
+      label = "Select Year Range:",
+      min = min(montenegro_full$year, na.rm = TRUE),
+      max = max(montenegro_full$year, na.rm = TRUE),
+      value = c(2010, 2020),
+      step = 1,
+      sep = ""
+    )
+  ),
 
-ggplotly(p, tooltip = "text")
+  div(
+    checkboxGroupInput(
+      inputId = "variables",
+      label = "Select Variables to Display:",
+      choices = c(
+        "Population Growth %" = "pop_growth",
+        "GDP per Capita" = "gdp_pc",
+        "Renewable Energy %" = "renewable_pct"
+      ),
+      selected = c("gdp_pc", "renewable_pct")
+    )
+  ),
+
+  col_widths = c(6, 6)
+)
 ```
 
-### plot
+## Row
 
+### Montenegro Development Indicators
 ```{r}
-
-p_gdp <- ggplot(gdp_pc_raw, aes(
-  x = year,
-  y = gdp_pc,
-  group = 1,
-  text = paste0(
-    "Year: ", year,
-    "<br>GDP per Capita: $", round(gdp_pc, 0)
-  )
-)) +
-  geom_line(color = "steelblue", linewidth = 1) +
-  geom_point(color = "steelblue", size = 2) +
-  labs(
-    title = "GDP per Capita in Montenegro (2010-2020)",
-    x = "Year",
-    y = "GDP per Capita"
-  ) +
-  theme_minimal()
-
-ggplotly(p_gdp, tooltip = "text")
+plotOutput("indicator_plot", height = "700px")
 ```
 
-### plot
 
 ```{r}
-p_pop <- ggplot(pop_growth_raw, aes(
-  x = year,
-  y = pop_growth,
-  group = 1,
-  text = paste0(
-    "Year: ", year,
-    "<br>Population Growth: ", round(pop_growth, 2), "%"
-  )
-)) +
-  geom_line(color = "steelblue", linewidth = 1) +
-  geom_point(color = "steelblue", size = 2) +
-  labs(
-    title = "Population Growth in Montenegro (2010-2020)",
-    x = "Year",
-    y = "Population Growth (%)"
-  ) +
-  theme_minimal()
+#| context: server
 
-ggplotly(p_pop, tooltip = "text")
+filtered_data <- reactive({
+  montenegro_full %>%
+    filter(
+      year >= input$years[1],
+      year <= input$years[2]
+    ) %>%
+    select(country, year, all_of(input$variables)) %>%
+    pivot_longer(
+      cols = all_of(input$variables),
+      names_to = "indicator",
+      values_to = "value"
+    ) %>%
+    mutate(
+      indicator = recode(
+        indicator,
+        pop_growth = "Population Growth",
+        gdp_pc = "GDP per Capita",
+        renewable_pct = "Renewable Energy %"
+      )
+    )
+})
+
+output$indicator_plot <- renderPlot({
+  filtered_data() %>%
+    ggplot(aes(x = year, y = value, color = indicator)) +
+    geom_line(linewidth = 1.2) +
+    geom_point(size = 2.5) +
+    facet_wrap(~ indicator, scales = "free_y") +
+    scale_color_brewer(palette = "Dark2", guide = "none") +
+    labs(
+      title = "Montenegro Development Indicators Over Time",
+      subtitle = "Indicators update based on selected years and variables",
+      x = "Year",
+      y = "Value"
+    ) +
+    theme_light(base_size = 14) +
+    theme(
+      plot.title = element_text(face = "bold"),
+      axis.title = element_text(face = "bold"),
+      panel.grid.minor = element_blank()
+    )
+})
+
 ```

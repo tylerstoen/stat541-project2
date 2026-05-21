@@ -453,7 +453,7 @@ income_summary %>%
   fmt_number(columns = c(avg_plastic_per_capita, median_plastic_per_capita), decimals = 5) %>%
   fmt_number(columns = total_plastic, decimals = 0) %>%
   tab_header(
-    title = md("**Table 4. Per Capita Recorded Plastic Waste by Economic Group**")
+    title = md("**Per Capita Recorded Plastic Waste by Economic Group**")
   ) %>%
   tab_source_note(
     source_note = "Countries grouped by GDP per capita using World Bank income thresholds. Recorded plastic per person calculated as total recorded items divided by population."
@@ -466,7 +466,7 @@ income_summary %>%
 
 
 ## Why this country?
-We selected Montenegro because it appeared as a strong outlier in several of the plastic waste per capita analyses, with substantially higher values than all other countries in the dataset. This makes Montenegro an interesting case study for exploring how environmental, economic, and demographic indicators relate to waste patterns over time. By focusing on an unusual observation, we can better understand how Montenegro differs from more typical countries represented in the data.
+We selected Montenegro because it appeared as a strong outlier in several of the plastic waste per capita analyses, with substantially higher values than all other countries in the dataset, specifically in 2019. This makes Montenegro an interesting case study for exploring how environmental, economic, and demographic indicators relate to waste patterns over time. Using this dashboard, we aim to gain a better understanding of **why** Montenegro differs from other countries represented in the data.
 
 
 
@@ -688,24 +688,28 @@ output$indicator_plot <- renderPlotly({
     renewable = list(
       data   = renewable_raw,
       y      = "renewable_pct",
-      title  = "Renewable Energy Consumption in Montenegro (2010-2020)",
-      y_lab  = "Renewable Energy Consumption (%)",
+      title  = "Renewable Energy Consumption (%) in Montenegro (2010-2020)",
+      color  = "forestgreen",
+      y_axis_ticks = scales::label_percent(scale = 1),
       tooltip = paste0("Year: ", renewable_raw$year,
                        "<br>Renewable: ", round(renewable_raw$renewable_pct, 2), "%")
     ),
     gdp = list(
       data   = gdp_pc_raw,
       y      = "gdp_pc",
-      title  = "GDP per Capita in Montenegro (2010-2020)",
-      y_lab  = "GDP per Capita (USD)",
+      title  = "GDP per Capita (USD) in Montenegro (2010-2020)",
+      color  = "steelblue",
+      y_axis_ticks = scales::label_dollar(scale = 1),
       tooltip = paste0("Year: ", gdp_pc_raw$year,
-                       "<br>GDP per Capita: $", round(gdp_pc_raw$gdp_pc, 0))
+                       "<br>GDP per Capita: $", 
+                       format(round(gdp_pc_raw$gdp_pc, 0), big.mark = ","))
     ),
     pop = list(
       data   = pop_growth_raw,
       y      = "pop_growth",
-      title  = "Population Growth in Montenegro (2010-2020)",
-      y_lab  = "Population Growth (%)",
+      title  = "Population Growth (%) in Montenegro (2010-2020)",
+      color  = "coral",
+      y_axis_ticks = scales::label_percent(scale = 1),
       tooltip = paste0("Year: ", pop_growth_raw$year,
                        "<br>Population Growth: ", round(pop_growth_raw$pop_growth, 2), "%")
     )
@@ -717,15 +721,18 @@ output$indicator_plot <- renderPlotly({
     group = 1,
     text = plot_data$tooltip
   )) +
-    geom_line(color = "steelblue", linewidth = 1) +
-    geom_point(color = "steelblue", size = 2) +
+    geom_line(color = plot_data$color, linewidth = 1) +
+    geom_point(color = plot_data$color, size = 2) +
+    scale_x_continuous(breaks = seq(min(plot_data$data$year), max(plot_data$data$year), by = 1)) +
+    scale_y_continuous(labels = plot_data$y_axis_ticks) +
     labs(
       title = plot_data$title,
       x     = "Year",
-      y     = plot_data$y_lab
+      y     = ""
     ) +
     theme_minimal()
   
   ggplotly(p, tooltip = "text")
 })
 ```
+
